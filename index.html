@@ -11,7 +11,7 @@
   header { background:var(--brand); color:#fff; padding:16px 24px; display:flex; justify-content:space-between; align-items:center; }
   header h1 { margin:0; font-size:1.3rem; }
   header button { background:rgba(255,255,255,.18); color:#fff; border:0; }
-  main { max-width:1000px; margin:24px auto; padding:0 16px; display:grid; gap:20px; }
+  main { max-width:1000px; margin:24px auto; padding:0 16px; display:grid; grid-template-columns:minmax(0,1fr); gap:20px; }
   .accounts { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:16px; }
   .card { background:var(--card); border-radius:12px; padding:18px 20px; box-shadow:0 1px 3px rgba(0,0,0,.06); }
   .acct { cursor:pointer; border:2px solid transparent; }
@@ -21,7 +21,8 @@
   .acct .num, .investment .num { color:var(--muted); font-size:.8rem; margin-top:6px; }
   .total .bal { color:var(--brand); }
   .row { display:grid; grid-template-columns:1fr 1.4fr; gap:20px; }
-  @media (max-width:760px) { .row { grid-template-columns:1fr; } }
+  .row > * { min-width:0; }
+  @media (max-width:760px) { .row { grid-template-columns:1fr; } .tabs { flex-wrap:wrap; } .tabs button { flex:1 1 calc(50% - 3px); min-width:0; } }
   .tabs { display:flex; gap:6px; margin-bottom:14px; }
   .tabs button { flex:1; background:var(--bg); color:var(--ink); }
   .tabs button.on { background:var(--brand); color:#fff; }
@@ -184,6 +185,7 @@ function addTxn(s, acctId, cents, desc, time = Date.now(), memo = '') {
 let state = load();
 let op = 'deposit';
 let selected = null;
+let maxIntent = null;
 
 const $ = id => document.getElementById(id);
 const fmt = c => (c < 0 ? '-' : '') + '$' + (Math.abs(c) / 100).toLocaleString('en-US', { minimumFractionDigits:2, maximumFractionDigits:2 });
@@ -283,6 +285,7 @@ function renderMarket() {
 function render() { renderAccounts(); renderSelects(); renderHistory(); renderMarket(); }
 
 function setOp(o) {
+  maxIntent = null;
   op = o;
   document.querySelectorAll('.tabs button').forEach(b => b.classList.toggle('on', b.dataset.op === o));
   $('tradeFields').hidden = o !== 'invest';
@@ -331,23 +334,34 @@ function submitTrade(cents, from, memo) {
     showMsg(`Bought ${fmt(cents)} of ${label}.`, true);
   } else {
     const available = basket ? portfolioValue() : posValue(sym);
-    if (cents > available) return showMsg(`You only hold ${fmt(available)}${basket ? ' in the Magnificent Seven basket' : ` of ${sym}`}.`);
     let credit = 0;
-    if (basket) {
-      const positions = STOCKS.map((s, index) => ({ symbol:s.symbol, index, value:posValue(s.symbol) })).filter(p => p.value > 0);
-      const total = positions.reduce((sum, p) => sum + p.value, 0);
-      const allocations = positions.map(p => ({ ...p, cents:Math.floor(cents * p.value / total) }));
-      let remainder = cents - allocations.reduce((sum, p) => sum + p.cents, 0);
-      allocations.sort((a, b) => b.value - a.value || a.index - b.index);
-      for (const p of allocations) {
-        if (!remainder) break;
-        if (p.cents < p.value) { p.cents++; remainder--; }
-      }
-      for (const p of allocations) if (p.cents) credit += sellStock(p.symbol, p.cents);
-    } else credit = sellStock(sym, cents);
+    if (maxIntent && maxIntent.sym === sym) {
+      if (available === 0) return showMsg(`You don't hold any ${label}.`);
+      if (basket) {
+        STOCKS.forEach(s => {
+          const value = posValue(s.symbol);
+          if (value > 0) credit += sellStock(s.symbol, value);
+        });
+      } else credit = sellStock(sym, posValue(sym));
+    } else {
+      if (cents > available) return showMsg(`You only hold ${fmt(available)}${basket ? ' in the Magnificent Seven basket' : ` of ${sym}`}.`);
+      if (basket) {
+        const positions = STOCKS.map((s, index) => ({ symbol:s.symbol, index, value:posValue(s.symbol) })).filter(p => p.value > 0);
+        const total = positions.reduce((sum, p) => sum + p.value, 0);
+        const allocations = positions.map(p => ({ ...p, cents:Math.floor(cents * p.value / total) }));
+        let remainder = cents - allocations.reduce((sum, p) => sum + p.cents, 0);
+        allocations.sort((a, b) => b.value - a.value || a.index - b.index);
+        for (const p of allocations) {
+          if (!remainder) break;
+          if (p.cents < p.value) { p.cents++; remainder--; }
+        }
+        for (const p of allocations) if (p.cents) credit += sellStock(p.symbol, p.cents);
+      } else credit = sellStock(sym, cents);
+    }
     addTxn(state, from, credit, `Sell ${label}`, Date.now(), memo);
     showMsg(`Sold ${fmt(credit)} of ${label}.`, true);
   }
+  maxIntent = null;
   save();
   $('amount').value = ''; $('memo').value = '';
   render();
@@ -356,7 +370,8 @@ function submitTrade(cents, from, memo) {
 function submit(e) {
   e.preventDefault();
   const cents = parseAmount($('amount').value);
-  if (cents === null) return showMsg('Enter a positive amount with up to 2 decimals.');
+  const maxSell = op === 'invest' && $('tradeAction').value === 'sell' && maxIntent?.sym === $('stock').value;
+  if (cents === null && !maxSell) return showMsg('Enter a positive amount with up to 2 decimals.');
   const from = $('from').value, memo = $('memo').value.trim();
   const src = acct(from);
   if (op === 'invest') return submitTrade(cents, from, memo);
@@ -394,9 +409,13 @@ document.querySelector('.tabs').addEventListener('click', e => { if (e.target.da
 $('opForm').addEventListener('submit', submit);
 $('to').addEventListener('change', renderSelects);
 $('from').addEventListener('change', renderSelects);
-$('tradeAction').addEventListener('change', renderSelects);
-$('stock').addEventListener('change', renderSelects);
-$('maxBtn').addEventListener('click', () => { $('amount').value = (tradeMax() / 100).toFixed(2); });
+$('amount').addEventListener('input', () => { maxIntent = null; });
+$('tradeAction').addEventListener('change', () => { maxIntent = null; renderSelects(); });
+$('stock').addEventListener('change', () => { maxIntent = null; renderSelects(); });
+$('maxBtn').addEventListener('click', () => {
+  $('amount').value = (tradeMax() / 100).toFixed(2);
+  maxIntent = $('tradeAction').value === 'sell' ? { sym:$('stock').value } : null;
+});
 $('market').addEventListener('click', e => {
   const sym = e.target.closest('[data-trade]')?.dataset.trade;
   if (!sym) return;
@@ -427,6 +446,9 @@ setInterval(() => {
     const market = state.market[s.symbol];
     market.price = Math.max(100, Math.round(market.price * (1 + (Math.random() * 2 - 1) * 0.006)));
   });
+  if (maxIntent && op === 'invest' && $('tradeAction').value === 'sell' && maxIntent.sym === $('stock').value) {
+    $('amount').value = (tradeMax() / 100).toFixed(2);
+  }
   save(); renderAccounts(); renderMarket();
 }, 3000);
 </script>
