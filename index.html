@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Quick Bank</title>
+<style>
+  :root { --bg:#f4f6fb; --card:#fff; --ink:#1d2433; --muted:#6b7385; --brand:#2f5bea; --good:#1a9e5c; --bad:#d6383f; --line:#e3e7ef; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif; background:var(--bg); color:var(--ink); }
+  header { background:var(--brand); color:#fff; padding:16px 24px; display:flex; justify-content:space-between; align-items:center; }
+  header h1 { margin:0; font-size:1.3rem; }
+  header button { background:rgba(255,255,255,.18); color:#fff; border:0; }
+  main { max-width:1000px; margin:24px auto; padding:0 16px; display:grid; gap:20px; }
+  .accounts { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:16px; }
+  .card { background:var(--card); border-radius:12px; padding:18px 20px; box-shadow:0 1px 3px rgba(0,0,0,.06); }
+  .acct { cursor:pointer; border:2px solid transparent; }
+  .acct.sel { border-color:var(--brand); }
+  .acct .name { color:var(--muted); font-size:.9rem; }
+  .acct .bal, .total .bal { font-size:1.7rem; font-weight:700; margin-top:4px; }
+  .acct .num { color:var(--muted); font-size:.8rem; margin-top:6px; }
+  .total .bal { color:var(--brand); }
+  .row { display:grid; grid-template-columns:1fr 1.4fr; gap:20px; }
+  @media (max-width:760px) { .row { grid-template-columns:1fr; } }
+  .tabs { display:flex; gap:6px; margin-bottom:14px; }
+  .tabs button { flex:1; background:var(--bg); color:var(--ink); }
+  .tabs button.on { background:var(--brand); color:#fff; }
+  label { display:block; font-size:.85rem; color:var(--muted); margin:10px 0 4px; }
+  input, select { width:100%; padding:9px 10px; border:1px solid var(--line); border-radius:8px; font-size:1rem; }
+  button { padding:9px 14px; border-radius:8px; border:0; background:var(--brand); color:#fff; font-size:.95rem; cursor:pointer; }
+  button.submit { width:100%; margin-top:14px; }
+  .msg { margin-top:10px; font-size:.9rem; min-height:1.2em; }
+  .msg.err { color:var(--bad); } .msg.ok { color:var(--good); }
+  h2 { margin:0 0 12px; font-size:1.05rem; }
+  .filters { display:flex; gap:8px; margin-bottom:10px; }
+  .filters input { flex:2; } .filters select { flex:1; }
+  table { width:100%; border-collapse:collapse; font-size:.9rem; }
+  th, td { text-align:left; padding:8px 6px; border-bottom:1px solid var(--line); }
+  th { color:var(--muted); font-weight:500; }
+  td.amt { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
+  .pos { color:var(--good); } .neg { color:var(--bad); }
+  .empty { color:var(--muted); text-align:center; padding:20px; }
+  .histwrap { max-height:420px; overflow:auto; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Quick Bank</h1>
+  <button id="reset" title="Clear all data and start over">Reset demo</button>
+</header>
+<main>
+  <section class="accounts" id="accounts"></section>
+  <div class="row">
+    <section class="card">
+      <div class="tabs" role="tablist">
+        <button data-op="deposit" class="on">Deposit</button>
+        <button data-op="withdraw">Withdraw</button>
+        <button data-op="transfer">Transfer</button>
+      </div>
+      <form id="opForm" autocomplete="off">
+        <div id="fromWrap">
+          <label for="from">Account</label>
+          <select id="from"></select>
+        </div>
+        <div id="toWrap" hidden>
+          <label for="to">To</label>
+          <select id="to"></select>
+        </div>
+        <div id="payeeWrap" hidden>
+          <label for="payee">Payee name</label>
+          <input id="payee" maxlength="40" placeholder="e.g. Jane Doe">
+        </div>
+        <label for="amount">Amount (USD)</label>
+        <input id="amount" inputmode="decimal" placeholder="0.00">
+        <label for="memo">Memo (optional)</label>
+        <input id="memo" maxlength="60" placeholder="What's it for?">
+        <button class="submit" type="submit" id="submitBtn">Deposit</button>
+        <div class="msg" id="msg" role="status"></div>
+      </form>
+    </section>
+    <section class="card">
+      <h2>Transaction history</h2>
+      <div class="filters">
+        <input id="search" placeholder="Search memo or payee">
+        <select id="filterAcct"></select>
+      </div>
+      <div class="histwrap">
+        <table>
+          <thead><tr><th>Date</th><th>Description</th><th>Account</th><th style="text-align:right">Amount</th></tr></thead>
+          <tbody id="hist"></tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+</main>
+<script>
+const KEY = 'quickbank.v1';
+const EXTERNAL = '__external__';
+
+function seed() {
+  const now = Date.now();
+  const s = {
+    accounts: [
+      { id:'chk', name:'Checking', number:'••••4821', balance:0 },
+      { id:'sav', name:'Savings',  number:'••••9037', balance:0 },
+    ],
+    txns: [], nextId: 1,
+  };
+  addTxn(s, 'chk', 250000, 'Opening deposit', now - 864e5 * 3);
+  addTxn(s, 'sav', 1000000, 'Opening deposit', now - 864e5 * 3);
+  addTxn(s, 'chk', -4599, 'Groceries', now - 864e5 * 2);
+  addTxn(s, 'chk', -120000, 'Rent', now - 864e5);
+  return s;
+}
+
+function load() {
+  try {
+    const s = JSON.parse(localStorage.getItem(KEY));
+    if (s && Array.isArray(s.accounts) && Array.isArray(s.txns)) return s;
+  } catch {}
+  return seed();
+}
+function save() { localStorage.setItem(KEY, JSON.stringify(state)); }
+
+function addTxn(s, acctId, cents, desc, time = Date.now(), memo = '') {
+  const a = s.accounts.find(x => x.id === acctId);
+  a.balance += cents;
+  s.txns.push({ id: s.nextId++, acct: acctId, amount: cents, desc, memo, time, after: a.balance });
+}
+
+let state = load();
+let op = 'deposit';
+let selected = null;
+
+const $ = id => document.getElementById(id);
+const fmt = c => (c < 0 ? '-' : '') + '$' + (Math.abs(c) / 100).toLocaleString('en-US', { minimumFractionDigits:2, maximumFractionDigits:2 });
+const acct = id => state.accounts.find(a => a.id === id);
+
+function parseAmount(str) {
+  const t = str.trim().replace(/[$,]/g, '');
+  if (!/^\d+(\.\d{1,2})?$/.test(t)) return null;
+  const [w, f = ''] = t.split('.');
+  const cents = Number(w) * 100 + Number((f + '00').slice(0, 2));
+  return Number.isSafeInteger(cents) && cents > 0 ? cents : null;
+}
+
+function esc(s) { return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+function renderAccounts() {
+  const total = state.accounts.reduce((t, a) => t + a.balance, 0);
+  $('accounts').innerHTML = state.accounts.map(a => `
+    <div class="card acct ${selected === a.id ? 'sel' : ''}" data-id="${a.id}" tabindex="0" role="button" aria-pressed="${selected === a.id}">
+      <div class="name">${esc(a.name)}</div>
+      <div class="bal">${fmt(a.balance)}</div>
+      <div class="num">${a.number}</div>
+    </div>`).join('') + `
+    <div class="card total">
+      <div class="name" style="color:var(--muted);font-size:.9rem">Total balance</div>
+      <div class="bal">${fmt(total)}</div>
+      <div class="num" style="color:var(--muted);font-size:.8rem;margin-top:6px">${state.accounts.length} accounts</div>
+    </div>`;
+}
+
+function renderSelects() {
+  const opts = state.accounts.map(a => `<option value="${a.id}">${esc(a.name)} (${fmt(a.balance)})</option>`).join('');
+  const keepFrom = $('from').value, keepTo = $('to').value;
+  $('from').innerHTML = opts;
+  $('to').innerHTML = opts + `<option value="${EXTERNAL}">Someone else…</option>`;
+  if (keepFrom) $('from').value = keepFrom;
+  if (keepTo) $('to').value = keepTo;
+  if (!$('to').value || $('to').value === $('from').value) {
+    const other = state.accounts.find(a => a.id !== $('from').value);
+    $('to').value = other ? other.id : EXTERNAL;
+  }
+  const keepF = $('filterAcct').value;
+  $('filterAcct').innerHTML = `<option value="">All accounts</option>` + state.accounts.map(a => `<option value="${a.id}">${esc(a.name)}</option>`).join('');
+  $('filterAcct').value = selected || keepF || '';
+  $('payeeWrap').hidden = !(op === 'transfer' && $('to').value === EXTERNAL);
+}
+
+function renderHistory() {
+  const q = $('search').value.trim().toLowerCase();
+  const f = $('filterAcct').value;
+  const rows = state.txns
+    .filter(t => (!f || t.acct === f) && (!q || (t.desc + ' ' + t.memo).toLowerCase().includes(q)))
+    .sort((a, b) => b.time - a.time || b.id - a.id);
+  $('hist').innerHTML = rows.length ? rows.map(t => `
+    <tr>
+      <td>${new Date(t.time).toLocaleDateString('en-US', { month:'short', day:'numeric' })}</td>
+      <td>${esc(t.desc)}${t.memo ? `<br><small style="color:var(--muted)">${esc(t.memo)}</small>` : ''}</td>
+      <td>${esc(acct(t.acct)?.name ?? '?')}</td>
+      <td class="amt ${t.amount < 0 ? 'neg' : 'pos'}">${t.amount > 0 ? '+' : ''}${fmt(t.amount)}<br><small style="color:var(--muted)">bal ${fmt(t.after)}</small></td>
+    </tr>`).join('') : `<tr><td colspan="4" class="empty">No transactions found</td></tr>`;
+}
+
+function render() { renderAccounts(); renderSelects(); renderHistory(); }
+
+function setOp(o) {
+  op = o;
+  document.querySelectorAll('.tabs button').forEach(b => b.classList.toggle('on', b.dataset.op === o));
+  $('toWrap').hidden = o !== 'transfer';
+  document.querySelector('label[for=from]').textContent = o === 'transfer' ? 'From' : 'Account';
+  $('submitBtn').textContent = o[0].toUpperCase() + o.slice(1);
+  showMsg('');
+  renderSelects();
+}
+
+function showMsg(text, ok) { $('msg').textContent = text; $('msg').className = 'msg ' + (ok ? 'ok' : 'err'); }
+
+function submit(e) {
+  e.preventDefault();
+  const cents = parseAmount($('amount').value);
+  if (cents === null) return showMsg('Enter a positive amount with up to 2 decimals.');
+  const from = $('from').value, memo = $('memo').value.trim();
+  const src = acct(from);
+
+  if (op === 'deposit') {
+    addTxn(state, from, cents, 'Deposit', Date.now(), memo);
+    showMsg(`Deposited ${fmt(cents)} to ${src.name}.`, true);
+  } else {
+    if (cents > src.balance) return showMsg(`Insufficient funds: ${src.name} has ${fmt(src.balance)}.`);
+    if (op === 'withdraw') {
+      addTxn(state, from, -cents, 'Withdrawal', Date.now(), memo);
+      showMsg(`Withdrew ${fmt(cents)} from ${src.name}.`, true);
+    } else {
+      const to = $('to').value;
+      if (to === from) return showMsg('Choose two different accounts.');
+      if (to === EXTERNAL) {
+        const payee = $('payee').value.trim();
+        if (!payee) return showMsg('Enter a payee name.');
+        addTxn(state, from, -cents, `Transfer to ${payee}`, Date.now(), memo);
+        showMsg(`Sent ${fmt(cents)} to ${payee}.`, true);
+      } else {
+        const dst = acct(to);
+        addTxn(state, from, -cents, `Transfer to ${dst.name}`, Date.now(), memo);
+        addTxn(state, to, cents, `Transfer from ${src.name}`, Date.now(), memo);
+        showMsg(`Moved ${fmt(cents)} from ${src.name} to ${dst.name}.`, true);
+      }
+    }
+  }
+  save();
+  $('amount').value = ''; $('memo').value = ''; $('payee').value = '';
+  render();
+}
+
+document.querySelector('.tabs').addEventListener('click', e => { if (e.target.dataset.op) setOp(e.target.dataset.op); });
+$('opForm').addEventListener('submit', submit);
+$('to').addEventListener('change', renderSelects);
+$('from').addEventListener('change', renderSelects);
+$('search').addEventListener('input', renderHistory);
+$('filterAcct').addEventListener('change', () => { selected = $('filterAcct').value || null; renderAccounts(); renderHistory(); });
+function pickAcct(el) {
+  const id = el.dataset.id;
+  selected = selected === id ? null : id;
+  if (selected) $('from').value = selected;
+  render();
+}
+$('accounts').addEventListener('click', e => { const el = e.target.closest('.acct'); if (el) pickAcct(el); });
+$('accounts').addEventListener('keydown', e => { const el = e.target.closest('.acct'); if (el && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); pickAcct(el); } });
+$('reset').addEventListener('click', () => {
+  if (!confirm('Erase all data and restore the demo accounts?')) return;
+  localStorage.removeItem(KEY); state = seed(); selected = null; save(); setOp('deposit'); render();
+});
+
+save();
+render();
+</script>
+</body>
+</html>
