@@ -16,18 +16,29 @@
   .card { background:var(--card); border-radius:12px; padding:18px 20px; box-shadow:0 1px 3px rgba(0,0,0,.06); }
   .acct { cursor:pointer; border:2px solid transparent; }
   .acct.sel { border-color:var(--brand); }
-  .acct .name { color:var(--muted); font-size:.9rem; }
-  .acct .bal, .total .bal { font-size:1.7rem; font-weight:700; margin-top:4px; }
-  .acct .num { color:var(--muted); font-size:.8rem; margin-top:6px; }
+  .acct .name, .investment .name { color:var(--muted); font-size:.9rem; }
+  .acct .bal, .investment .bal, .total .bal { font-size:1.7rem; font-weight:700; margin-top:4px; }
+  .acct .num, .investment .num { color:var(--muted); font-size:.8rem; margin-top:6px; }
   .total .bal { color:var(--brand); }
   .row { display:grid; grid-template-columns:1fr 1.4fr; gap:20px; }
   @media (max-width:760px) { .row { grid-template-columns:1fr; } }
   .tabs { display:flex; gap:6px; margin-bottom:14px; }
   .tabs button { flex:1; background:var(--bg); color:var(--ink); }
   .tabs button.on { background:var(--brand); color:#fff; }
+  .trade-fields[hidden] { display:none; }
   label { display:block; font-size:.85rem; color:var(--muted); margin:10px 0 4px; }
   input, select { width:100%; padding:9px 10px; border:1px solid var(--line); border-radius:8px; font-size:1rem; }
   button { padding:9px 14px; border-radius:8px; border:0; background:var(--brand); color:#fff; font-size:.95rem; cursor:pointer; }
+  button.small { padding:5px 9px; font-size:.8rem; }
+  .amount-row { display:flex; align-items:center; justify-content:space-between; }
+  .amount-row label { margin-bottom:4px; }
+  .market-card { min-width:0; }
+  .market-note { color:var(--muted); font-size:.82rem; margin-top:-7px; margin-bottom:10px; }
+  .marketwrap { overflow-x:auto; }
+  .market-table { min-width:820px; }
+  .market-table th:last-child, .market-table td:last-child { text-align:center; }
+  .market-table tfoot td { font-weight:700; border-bottom:0; border-top:2px solid var(--line); }
+  .market-table .ticker { font-weight:700; }
   button.submit { width:100%; margin-top:14px; }
   .msg { margin-top:10px; font-size:.9rem; min-height:1.2em; }
   .msg.err { color:var(--bad); } .msg.ok { color:var(--good); }
@@ -56,8 +67,15 @@
         <button data-op="deposit" class="on">Deposit</button>
         <button data-op="withdraw">Withdraw</button>
         <button data-op="transfer">Transfer</button>
+        <button data-op="invest">Invest</button>
       </div>
       <form id="opForm" autocomplete="off">
+        <div id="tradeFields" class="trade-fields" hidden>
+          <label for="tradeAction">Action</label>
+          <select id="tradeAction"><option value="buy">Buy</option><option value="sell">Sell</option></select>
+          <label for="stock">Stock</label>
+          <select id="stock"></select>
+        </div>
         <div id="fromWrap">
           <label for="from">Account</label>
           <select id="from"></select>
@@ -70,7 +88,10 @@
           <label for="payee">Payee name</label>
           <input id="payee" maxlength="40" placeholder="e.g. Jane Doe">
         </div>
-        <label for="amount">Amount (USD)</label>
+        <div class="amount-row">
+          <label for="amount">Amount (USD)</label>
+          <button type="button" class="small" id="maxBtn" hidden>Max</button>
+        </div>
         <input id="amount" inputmode="decimal" placeholder="0.00">
         <label for="memo">Memo (optional)</label>
         <input id="memo" maxlength="60" placeholder="What's it for?">
@@ -92,10 +113,37 @@
       </div>
     </section>
   </div>
+  <section class="card market-card">
+    <h2>Magnificent Seven</h2>
+    <div class="market-note">Simulated prices — not real market data</div>
+    <div class="marketwrap">
+      <table class="market-table">
+        <thead><tr><th>Ticker</th><th>Company</th><th>Price</th><th>Change</th><th>Shares</th><th>Value</th><th>Gain/Loss</th><th></th></tr></thead>
+        <tbody id="market"></tbody>
+        <tfoot id="marketTotals"></tfoot>
+      </table>
+    </div>
+  </section>
 </main>
 <script>
 const KEY = 'quickbank.v1';
 const EXTERNAL = '__external__';
+const STOCKS = [
+  { symbol:'AAPL', name:'Apple', price:22500 },
+  { symbol:'MSFT', name:'Microsoft', price:42000 },
+  { symbol:'GOOGL', name:'Alphabet', price:17500 },
+  { symbol:'AMZN', name:'Amazon', price:19000 },
+  { symbol:'NVDA', name:'NVIDIA', price:13500 },
+  { symbol:'META', name:'Meta Platforms', price:58000 },
+  { symbol:'TSLA', name:'Tesla', price:25000 },
+];
+
+function defaultMarket() {
+  return Object.fromEntries(STOCKS.map(s => [s.symbol, { price:s.price, open:s.price }]));
+}
+function defaultHoldings() {
+  return Object.fromEntries(STOCKS.map(s => [s.symbol, { micro:0, cost:0 }]));
+}
 
 function seed() {
   const now = Date.now();
@@ -104,7 +152,7 @@ function seed() {
       { id:'chk', name:'Checking', number:'••••4821', balance:0 },
       { id:'sav', name:'Savings',  number:'••••9037', balance:0 },
     ],
-    txns: [], nextId: 1,
+    txns: [], nextId: 1, market:defaultMarket(), holdings:defaultHoldings(),
   };
   addTxn(s, 'chk', 250000, 'Opening deposit', now - 864e5 * 3);
   addTxn(s, 'sav', 1000000, 'Opening deposit', now - 864e5 * 3);
@@ -116,7 +164,11 @@ function seed() {
 function load() {
   try {
     const s = JSON.parse(localStorage.getItem(KEY));
-    if (s && Array.isArray(s.accounts) && Array.isArray(s.txns)) return s;
+    if (s && Array.isArray(s.accounts) && Array.isArray(s.txns)) {
+      if (!s.market) s.market = defaultMarket();
+      if (!s.holdings) s.holdings = defaultHoldings();
+      return s;
+    }
   } catch {}
   return seed();
 }
@@ -145,19 +197,26 @@ function parseAmount(str) {
 }
 
 function esc(s) { return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function posValue(sym) { const h = state.holdings[sym]; return Math.round(h.micro * state.market[sym].price / 1e6); }
+function portfolioValue() { return STOCKS.reduce((sum, s) => sum + posValue(s.symbol), 0); }
+function cashValue() { return state.accounts.reduce((sum, a) => sum + a.balance, 0); }
 
 function renderAccounts() {
-  const total = state.accounts.reduce((t, a) => t + a.balance, 0);
   $('accounts').innerHTML = state.accounts.map(a => `
     <div class="card acct ${selected === a.id ? 'sel' : ''}" data-id="${a.id}" tabindex="0" role="button" aria-pressed="${selected === a.id}">
       <div class="name">${esc(a.name)}</div>
       <div class="bal">${fmt(a.balance)}</div>
       <div class="num">${a.number}</div>
     </div>`).join('') + `
+    <div class="card investment">
+      <div class="name">Investments</div>
+      <div class="bal">${fmt(portfolioValue())}</div>
+      <div class="num">Portfolio value</div>
+    </div>
     <div class="card total">
-      <div class="name" style="color:var(--muted);font-size:.9rem">Total balance</div>
-      <div class="bal">${fmt(total)}</div>
-      <div class="num" style="color:var(--muted);font-size:.8rem;margin-top:6px">${state.accounts.length} accounts</div>
+      <div class="name" style="color:var(--muted);font-size:.9rem">Net worth</div>
+      <div class="bal">${fmt(cashValue() + portfolioValue())}</div>
+      <div class="num" style="color:var(--muted);font-size:.8rem;margin-top:6px">${state.accounts.length} accounts + investments</div>
     </div>`;
 }
 
@@ -176,6 +235,14 @@ function renderSelects() {
   $('filterAcct').innerHTML = `<option value="">All accounts</option>` + state.accounts.map(a => `<option value="${a.id}">${esc(a.name)}</option>`).join('');
   $('filterAcct').value = selected || keepF || '';
   $('payeeWrap').hidden = !(op === 'transfer' && $('to').value === EXTERNAL);
+  $('fromWrap').querySelector('label').textContent = op === 'invest'
+    ? ($('tradeAction').value === 'buy' ? 'Pay from' : 'Deposit to')
+    : op === 'transfer' ? 'From' : 'Account';
+  $('toWrap').hidden = op !== 'transfer';
+  $('maxBtn').hidden = op !== 'invest';
+  $('submitBtn').textContent = op === 'invest'
+    ? ($('tradeAction').value === 'buy' ? 'Buy' : 'Sell')
+    : op[0].toUpperCase() + op.slice(1);
 }
 
 function renderHistory() {
@@ -193,19 +260,97 @@ function renderHistory() {
     </tr>`).join('') : `<tr><td colspan="4" class="empty">No transactions found</td></tr>`;
 }
 
-function render() { renderAccounts(); renderSelects(); renderHistory(); }
+function renderMarket() {
+  let totalValue = 0, totalGain = 0;
+  $('market').innerHTML = STOCKS.map(s => {
+    const h = state.holdings[s.symbol], value = posValue(s.symbol), gain = value - h.cost;
+    const change = (state.market[s.symbol].price - state.market[s.symbol].open) / state.market[s.symbol].open * 100;
+    totalValue += value; totalGain += gain;
+    return `<tr>
+      <td class="ticker">${esc(s.symbol)}</td><td>${esc(s.name)}</td>
+      <td class="amt">${fmt(state.market[s.symbol].price)}</td>
+      <td class="amt ${change < 0 ? 'neg' : 'pos'}">${change > 0 ? '+' : ''}${change.toFixed(2)}%</td>
+      <td class="amt">${(h.micro / 1e6).toLocaleString('en-US', { maximumFractionDigits:4 })}</td>
+      <td class="amt">${fmt(value)}</td>
+      <td class="amt ${gain < 0 ? 'neg' : 'pos'}">${fmt(gain)}</td>
+      <td><button type="button" class="small" data-trade="${esc(s.symbol)}">Trade</button></td>
+    </tr>`;
+  }).join('');
+  $('marketTotals').innerHTML = `<tr><td colspan="5">Total</td><td class="amt">${fmt(totalValue)}</td><td class="amt ${totalGain < 0 ? 'neg' : 'pos'}">${fmt(totalGain)}</td><td></td></tr>`;
+}
+
+function render() { renderAccounts(); renderSelects(); renderHistory(); renderMarket(); }
 
 function setOp(o) {
   op = o;
   document.querySelectorAll('.tabs button').forEach(b => b.classList.toggle('on', b.dataset.op === o));
-  $('toWrap').hidden = o !== 'transfer';
-  document.querySelector('label[for=from]').textContent = o === 'transfer' ? 'From' : 'Account';
-  $('submitBtn').textContent = o[0].toUpperCase() + o.slice(1);
+  $('tradeFields').hidden = o !== 'invest';
   showMsg('');
   renderSelects();
 }
 
 function showMsg(text, ok) { $('msg').textContent = text; $('msg').className = 'msg ' + (ok ? 'ok' : 'err'); }
+
+function tradeMax() {
+  if ($('tradeAction').value === 'buy') return acct($('from').value)?.balance ?? 0;
+  const sym = $('stock').value;
+  return sym === 'MAG7' ? portfolioValue() : posValue(sym);
+}
+
+function buyStock(sym, cents) {
+  const h = state.holdings[sym], price = state.market[sym].price;
+  h.micro += Math.floor(cents * 1e6 / price);
+  h.cost += cents;
+}
+
+function sellStock(sym, cents) {
+  const h = state.holdings[sym], value = posValue(sym);
+  if (cents >= value - 1) {
+    const credit = value;
+    h.micro = 0; h.cost = 0;
+    return credit;
+  }
+  const microSold = Math.min(h.micro, Math.ceil(cents * 1e6 / state.market[sym].price));
+  h.cost -= Math.round(h.cost * microSold / h.micro);
+  h.micro -= microSold;
+  return cents;
+}
+
+function submitTrade(cents, from, memo) {
+  const src = acct(from), action = $('tradeAction').value, sym = $('stock').value;
+  const basket = sym === 'MAG7';
+  const label = basket ? 'Magnificent Seven basket' : sym;
+  if (action === 'buy') {
+    if (cents > src.balance) return showMsg(`Insufficient funds: ${src.name} has ${fmt(src.balance)}.`);
+    if (basket) {
+      const split = Math.floor(cents / STOCKS.length), remainder = cents % STOCKS.length;
+      STOCKS.forEach((s, i) => buyStock(s.symbol, split + (i < remainder ? 1 : 0)));
+    } else buyStock(sym, cents);
+    addTxn(state, from, -cents, `Buy ${label}`, Date.now(), memo);
+    showMsg(`Bought ${fmt(cents)} of ${label}.`, true);
+  } else {
+    const available = basket ? portfolioValue() : posValue(sym);
+    if (cents > available) return showMsg(`You only hold ${fmt(available)}${basket ? ' in the Magnificent Seven basket' : ` of ${sym}`}.`);
+    let credit = 0;
+    if (basket) {
+      const positions = STOCKS.map((s, index) => ({ symbol:s.symbol, index, value:posValue(s.symbol) })).filter(p => p.value > 0);
+      const total = positions.reduce((sum, p) => sum + p.value, 0);
+      const allocations = positions.map(p => ({ ...p, cents:Math.floor(cents * p.value / total) }));
+      let remainder = cents - allocations.reduce((sum, p) => sum + p.cents, 0);
+      allocations.sort((a, b) => b.value - a.value || a.index - b.index);
+      for (const p of allocations) {
+        if (!remainder) break;
+        if (p.cents < p.value) { p.cents++; remainder--; }
+      }
+      for (const p of allocations) if (p.cents) credit += sellStock(p.symbol, p.cents);
+    } else credit = sellStock(sym, cents);
+    addTxn(state, from, credit, `Sell ${label}`, Date.now(), memo);
+    showMsg(`Sold ${fmt(credit)} of ${label}.`, true);
+  }
+  save();
+  $('amount').value = ''; $('memo').value = '';
+  render();
+}
 
 function submit(e) {
   e.preventDefault();
@@ -213,6 +358,7 @@ function submit(e) {
   if (cents === null) return showMsg('Enter a positive amount with up to 2 decimals.');
   const from = $('from').value, memo = $('memo').value.trim();
   const src = acct(from);
+  if (op === 'invest') return submitTrade(cents, from, memo);
 
   if (op === 'deposit') {
     addTxn(state, from, cents, 'Deposit', Date.now(), memo);
@@ -247,6 +393,14 @@ document.querySelector('.tabs').addEventListener('click', e => { if (e.target.da
 $('opForm').addEventListener('submit', submit);
 $('to').addEventListener('change', renderSelects);
 $('from').addEventListener('change', renderSelects);
+$('tradeAction').addEventListener('change', renderSelects);
+$('stock').addEventListener('change', renderSelects);
+$('maxBtn').addEventListener('click', () => { $('amount').value = (tradeMax() / 100).toFixed(2); });
+$('market').addEventListener('click', e => {
+  const sym = e.target.closest('[data-trade]')?.dataset.trade;
+  if (!sym) return;
+  setOp('invest'); $('stock').value = sym; renderSelects(); $('amount').focus();
+});
 $('search').addEventListener('input', renderHistory);
 $('filterAcct').addEventListener('change', () => { selected = $('filterAcct').value || null; renderAccounts(); renderHistory(); });
 function pickAcct(el) {
@@ -263,7 +417,17 @@ $('reset').addEventListener('click', () => {
 });
 
 save();
+const stockOptions = `<option value="MAG7">Magnificent Seven basket (equal split)</option>` +
+  STOCKS.map(s => `<option value="${esc(s.symbol)}">${esc(s.symbol)} — ${esc(s.name)}</option>`).join('');
+$('stock').innerHTML = stockOptions;
 render();
+setInterval(() => {
+  STOCKS.forEach(s => {
+    const market = state.market[s.symbol];
+    market.price = Math.max(100, Math.round(market.price * (1 + (Math.random() * 2 - 1) * 0.006)));
+  });
+  save(); renderAccounts(); renderMarket();
+}, 3000);
 </script>
 </body>
 </html>
